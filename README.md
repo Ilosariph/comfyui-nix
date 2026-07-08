@@ -32,7 +32,7 @@ For ROCm (Linux/AMD):
 nix run github:utensils/comfyui-nix#rocm
 ```
 
-ROCm builds use pre-built PyTorch wheels from pytorch.org, so builds are fast (~2GB download); so far, GPU support has only been validated on `gfx1100`.
+ROCm builds use pre-built PyTorch wheels from pytorch.org, so builds are fast (~2GB download); so far, GPU support has only been validated on `gfx1100`. For the AMD Ryzen AI Max+ 395 / Strix Halo (`gfx1151`) iGPU, use the opt-in `#rocm-gfx1151` variant — see [AMD Ryzen AI Max+ 395 / Strix Halo](#amd-ryzen-ai-max-395--strix-halo-gfx1151).
 
 For Intel XPU (Linux/Intel GPU):
 
@@ -92,6 +92,39 @@ nix run github:utensils/comfyui-nix#rocm
 ```
 
 > ROCm support contributed by [@pyqlsa](https://github.com/pyqlsa) — thank you!
+
+### AMD Ryzen AI Max+ 395 / Strix Halo (`gfx1151`)
+
+The Ryzen AI Max+ 395 "Radeon 8060S" iGPU (`gfx1151`, Strix Halo) is **not** covered
+by the stock ROCm wheels above (compiled for `gfx1100`) and segfaults on them at
+model-load time. Use the opt-in `rocm-gfx1151` variant instead:
+
+```bash
+nix run github:utensils/comfyui-nix#rocm-gfx1151 -- --lowvram
+```
+
+This ships in two phases:
+
+- **Phase 1 (default):** reuses the stock ROCm 7.1 wheels but runs them on `gfx1151`
+  by setting `HSA_OVERRIDE_GFX_VERSION=11.0.0` (masquerade as `gfx1100`) plus
+  `GPU_MAX_HEAP_SIZE`/`GPU_MAX_ALLOC_PERCENT` in the launcher. Nothing to build beyond
+  the normal ROCm wheels. Every env default respects values you export yourself.
+- **Phase 2 (native, opt-in):** if Phase 1 still crashes or you want native `gfx1151`
+  kernels + Triton flash-attention, fill in and enable the wheel pins in
+  `nix/versions.nix` (`pytorchWheels.rocmGfx1151` — set `enable = true`, then add the
+  real `url`/`hash` for a **self-contained** `cp312` gfx1151 build). The launcher then
+  switches to `HSA_OVERRIDE_GFX_VERSION=11.5.1` and enables
+  `FLASH_ATTENTION_TRITON_AMD_ENABLE=1`.
+
+For the NixOS module, select it with:
+
+```nix
+services.comfyui = {
+  enable = true;
+  gpuSupport = "rocm";
+  rocmArch = "gfx1151";
+};
+```
 
 ## Intel XPU (oneAPI / SYCL) Support
 
@@ -372,6 +405,7 @@ The overlay provides these packages:
 | `pkgs.comfy-ui`      | CPU + Apple Silicon (Metal) - use this for macOS     |
 | `pkgs.comfy-ui-cuda` | NVIDIA GPUs (Linux x86_64 only, all architectures)   |
 | `pkgs.comfy-ui-rocm` | AMD GPUs (Linux x86_64 only, `gfx1100`)              |
+| `pkgs.comfy-ui-rocm-gfx1151` | AMD Ryzen AI Max+ 395 / Strix Halo iGPU (`gfx1151`, Linux x86_64 only) |
 | `pkgs.comfy-ui-xpu`  | Intel GPUs (Linux x86_64 only, Arc + Core Ultra iGPU) |
 
 > **Note:** On macOS with Apple Silicon, the base `comfy-ui` package automatically uses Metal for GPU acceleration. No separate CUDA package is needed.

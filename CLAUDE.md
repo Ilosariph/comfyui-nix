@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run with browser**: `nix run -- --open` (automatically opens browser)
 - **Run with CUDA**: `nix run .#cuda` (Linux/NVIDIA only, uses pre-built PyTorch CUDA wheels)
 - **Run with ROCm**: `nix run .#rocm` (Linux/AMD only, uses pre-built PyTorch ROCm 7.1 wheels)
+- **Run with ROCm on Ryzen AI Max+ 395 / Strix Halo**: `nix run .#rocm-gfx1151` (opt-in `gfx1151` iGPU variant; Phase 1 masquerades as gfx1100, Phase 2 uses native wheels — see `nix/versions.nix` `pytorchWheels.rocmGfx1151`)
 - **Run with Intel XPU**: `nix run .#xpu` (Linux/Intel only, uses pre-built PyTorch XPU wheels — oneAPI/SYCL, no IPEX)
 - **Run with custom port**: `nix run -- --port=8080`
 - **Run with network access**: `nix run -- --listen 0.0.0.0`
@@ -156,6 +157,7 @@ fonts/         - Bundled fonts for nodes requiring system fonts
 - macOS: PyTorch pinned to 2.5.1 to work around MPS bugs on macOS 26 (Tahoe); browser opens via `/usr/bin/open`
 - CUDA: Pre-built wheels from pytorch.org with CUDA 12.8 runtime bundled (no separate toolkit needed); supports Pascal through Blackwell
 - ROCm: Pre-built wheels from pytorch.org with ROCm 7.1 runtime bundled; tested on gfx1100 (7900 XTX); `/run/opengl-driver/lib` provides AMD drivers on NixOS
+- ROCm gfx1151 (Ryzen AI Max+ 395 / Strix Halo): opt-in `rocm-gfx1151` variant, selected by build param `rocmArch = "gfx1151"` (orthogonal to `gpuSupport = "rocm"`; threaded through `flake.nix` → `python-overrides.nix` for wheel selection and `packages.nix` for launcher env). The stock gfx1100 wheels SEGV on gfx1151, so the launcher bakes `HSA_OVERRIDE_GFX_VERSION` (11.0.0 Phase 1 / 11.5.1 Phase 2) + `GPU_MAX_HEAP_SIZE`/`GPU_MAX_ALLOC_PERCENT`, all set-if-unset. Native wheels (`pytorchWheels.rocmGfx1151` in `versions.nix`) are placeholder-pinned and inert until `enable = true` — this keeps `nix flake check` (which builds package outputs) green. Untested on maintainer hardware.
 - Intel XPU: Pre-built wheels from pytorch.org (oneAPI / SYCL, no IPEX); supports Arc A/B series + Core Ultra iGPUs (Meteor Lake+); untested on maintainer hardware — treat external user reports as authoritative; `/run/opengl-driver/lib` preferred, Nix-bundled `level-zero`/`intel-compute-runtime` as non-NixOS fallback
 - Linux CPU: Uses nixpkgs PyTorch; browser opens via `xdg-open`
 - Cross-platform Docker builds work from any system via `nix run .#buildDockerLinux` etc.

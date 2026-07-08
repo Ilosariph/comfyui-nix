@@ -127,6 +127,15 @@ in
     };
   };
 }
+// pkgs.lib.optionalAttrs (packages ? rocm-gfx1151) {
+  rocm-gfx1151 = {
+    type = "app";
+    program = "${packages.rocm-gfx1151}/bin/comfy-ui";
+    meta = {
+      description = "Run ComfyUI with ROCm on AMD Ryzen AI Max+ 395 / Strix Halo (gfx1151)";
+    };
+  };
+}
 // pkgs.lib.optionalAttrs (packages ? xpu) {
   xpu = {
     type = "app";

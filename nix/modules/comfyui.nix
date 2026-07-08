@@ -18,7 +18,7 @@ let
     if useCuda then
       pkgs.comfy-ui-cuda
     else if useRocm then
-      pkgs.comfy-ui-rocm
+      (if cfg.rocmArch == "gfx1151" then pkgs.comfy-ui-rocm-gfx1151 else pkgs.comfy-ui-rocm)
     else if useXpu then
       pkgs.comfy-ui-xpu
     else
@@ -132,6 +132,31 @@ in
       '';
     };
 
+    rocmArch = lib.mkOption {
+      type = lib.types.enum [
+        "default"
+        "gfx1151"
+      ];
+      default = "default";
+      description = ''
+        ROCm GPU architecture refinement. Only used when `gpuSupport = "rocm"`.
+
+        - `default`: the standard ROCm package (stock pytorch.org ROCm 7.1 wheels;
+          `gfx1100` tested). Use this for discrete Radeon cards.
+
+        - `gfx1151`: opt-in variant for the AMD Ryzen AI Max+ 395 / Strix Halo
+          "Radeon 8060S" iGPU, which SEGVs on the stock wheels. Selects the
+          `comfy-ui-rocm-gfx1151` package, which bakes
+          `HSA_OVERRIDE_GFX_VERSION` (11.0.0, masquerading as gfx1100) plus
+          `GPU_MAX_HEAP_SIZE` / `GPU_MAX_ALLOC_PERCENT` into the launcher (Phase 1).
+          For native gfx1151 kernels + Triton flash-attention (Phase 2), fill in
+          and enable the wheel pins in `nix/versions.nix`
+          (`pytorchWheels.rocmGfx1151`); the launcher then switches to
+          `HSA_OVERRIDE_GFX_VERSION = 11.5.1`. All env defaults respect values you
+          already set via `services.comfyui.environment`.
+      '';
+    };
+
     cudaCapabilities = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;
@@ -178,14 +203,16 @@ in
       default = resolvePackage;
       defaultText = lib.literalExpression ''
         if useCuda then pkgs.comfy-ui-cuda
-        else if useRocm then pkgs.comfy-ui-rocm
+        else if useRocm then
+          (if rocmArch == "gfx1151" then pkgs.comfy-ui-rocm-gfx1151 else pkgs.comfy-ui-rocm)
         else if useXpu then pkgs.comfy-ui-xpu
         else pkgs.comfy-ui
       '';
       description = ''
         ComfyUI package to run. Automatically set based on `gpuSupport`:
         - `gpuSupport = "cuda"`: CUDA package (supports all GPU architectures)
-        - `gpuSupport = "rocm"`: ROCm package (`gfx1100` tested)
+        - `gpuSupport = "rocm"`: ROCm package (`gfx1100` tested); with
+          `rocmArch = "gfx1151"`, the Ryzen AI Max+ 395 / Strix Halo variant
         - `gpuSupport = "xpu"`: Intel XPU package (oneAPI / SYCL; Arc + Core Ultra iGPU)
         - Otherwise: CPU-only build
 

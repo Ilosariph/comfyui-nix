@@ -2,11 +2,19 @@
   pkgs,
   versions,
   gpuSupport ? "none", # "none", "cuda", "rocm", "xpu"
+  # ROCm architecture refinement: "default" (stock rocm71 wheels) or "gfx1151"
+  # (AMD Strix Halo / Ryzen AI Max+ 395). Only meaningful when gpuSupport = "rocm".
+  rocmArch ? "default",
 }:
 let
   lib = pkgs.lib;
   useCuda = gpuSupport == "cuda" && pkgs.stdenv.isLinux;
   useRocm = gpuSupport == "rocm" && pkgs.stdenv.isLinux;
+  # Native gfx1151 wheels are opt-in (Phase 2): only used once the pins in
+  # versions.nix are filled in and `enable = true`. While disabled, the gfx1151
+  # variant reuses the stock rocm71 wheels (Phase 1: HSA_OVERRIDE masquerade).
+  useRocmGfx1151Native =
+    useRocm && rocmArch == "gfx1151" && versions.pytorchWheels.rocmGfx1151.enable;
   # Intel XPU wheels are Linux x86_64 only (no aarch64 upstream)
   useXpu = gpuSupport == "xpu" && pkgs.stdenv.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
   useDarwinArm64 = pkgs.stdenv.isDarwin && pkgs.stdenv.hostPlatform.isAarch64;
@@ -19,7 +27,10 @@ let
 
   # Pre-built PyTorch ROCm wheels from pytorch.org
   # These avoid compiling PyTorch from source (which requires 30-60GB RAM and hours of build time)
-  rocmWheels = versions.pytorchWheels.rocm71;
+  # When the native gfx1151 pins are enabled, use those instead (self-contained
+  # wheels with native Strix Halo kernels); otherwise the stock rocm71 wheels.
+  rocmWheels =
+    if useRocmGfx1151Native then versions.pytorchWheels.rocmGfx1151 else versions.pytorchWheels.rocm71;
 
   # Pre-built PyTorch XPU wheels from pytorch.org (Intel oneAPI / SYCL)
   # Unlike CUDA/ROCm, the XPU torch wheel does NOT bundle its SYCL / MKL /
@@ -381,14 +392,18 @@ lib.optionalAttrs useCuda {
       done
     '';
 
-    propagatedBuildInputs = with final; [
-      filelock
-      typing-extensions
-      sympy
-      networkx
-      jinja2
-      fsspec
-    ];
+    propagatedBuildInputs =
+      (with final; [
+        filelock
+        typing-extensions
+        sympy
+        networkx
+        jinja2
+        fsspec
+      ])
+      # Native gfx1151 wheels ship a Triton build (pytorch-triton-rocm) that
+      # ComfyUI's AMD flash-attention path imports as `triton`.
+      ++ lib.optional useRocmGfx1151Native final.pytorch-triton-rocm;
     # Don't check for ROCm at import time (requires GPU)
     pythonImportsCheck = [ ];
     doCheck = false;
@@ -513,6 +528,42 @@ lib.optionalAttrs useCuda {
       description = "TorchAudio with ROCm (pre-built wheel)";
       homepage = "https://pytorch.org/audio";
       license = lib.licenses.bsd2;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+}
+# Triton for native gfx1151 flash-attention (Phase 2). Only built when the native
+# wheels are enabled; the ignore-list mirrors torch's SONAMEs (loaded via Python
+# import) — tune at build time if your pinned wheel resolves differently.
+// lib.optionalAttrs useRocmGfx1151Native {
+  pytorch-triton-rocm = final.buildPythonPackage {
+    pname = "pytorch-triton-rocm";
+    version = versions.pytorchWheels.rocmGfx1151.triton.version;
+    format = "wheel";
+    src = pkgs.fetchurl {
+      url = versions.pytorchWheels.rocmGfx1151.triton.url;
+      hash = versions.pytorchWheels.rocmGfx1151.triton.hash;
+    };
+    dontBuild = true;
+    dontConfigure = true;
+    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+    buildInputs = wheelBuildInputs ++ rocmLibs;
+    autoPatchelfIgnoreMissingDeps = [
+      "libc10.so"
+      "libc10_hip.so"
+      "libamdhip64.so.7"
+      "libtorch.so"
+      "libtorch_cpu.so"
+      "libtorch_hip.so"
+      "libtorch_python.so"
+    ];
+    propagatedBuildInputs = with final; [ filelock ];
+    pythonImportsCheck = [ ];
+    doCheck = false;
+    meta = {
+      description = "Triton (pytorch-triton-rocm) for AMD gfx1151 flash-attention";
+      homepage = "https://github.com/triton-lang/triton";
+      license = lib.licenses.mit;
       platforms = [ "x86_64-linux" ];
     };
   };

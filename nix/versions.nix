@@ -186,6 +186,53 @@
         hash = "sha256-pUuMH2HeAbGrlGWJqgFYId0RCTVEcCJJ0gq6VpE8aLs=";
       };
     };
+    # Linux x86_64 native gfx1151 (AMD Strix Halo / Ryzen AI Max+ 395) — OPT-IN, Phase 2.
+    #
+    # The stock rocm71 wheels above are compiled for gfx1100 and SEGV on gfx1151.
+    # The gfx1151 variant (comfy-ui-rocm-gfx1151) ships in two phases:
+    #   Phase 1 (default, enable = false): reuse the rocm71 wheels above and run
+    #     them on gfx1151 via an HSA_OVERRIDE_GFX_VERSION masquerade (set in the
+    #     launcher). Fully buildable — these placeholders are NOT referenced.
+    #   Phase 2 (enable = true): swap in native gfx1151 wheels pinned below.
+    #
+    # As of 2026-07 there is no official *non-nightly* gfx1151 cp312 wheel. Pin a
+    # SELF-CONTAINED build (ROCm bundled inside torch — NOT the split `rocm_sdk`
+    # nightly layout, which is reported broken re: hipsparselt), e.g. a known-good
+    # build from https://rocm.nightlies.amd.com/v2/gfx1151/ matching the ROCm 7.2 /
+    # torch 2.9.1 era used by AMD's rocm/pytorch image.
+    #
+    # To activate Phase 2:
+    #   1. set enable = true
+    #   2. replace each REPLACE-ME url with the real wheel url
+    #   3. fill each hash — get it with:
+    #        nix store prefetch-file --json <url> | jq -r .hash
+    #      (or run `nix build .#rocm-gfx1151` and copy the "got:" hash Nix prints)
+    # Version strings below are indicative; match your chosen wheels.
+    rocmGfx1151 = {
+      enable = false;
+      torch = {
+        version = "2.9.1";
+        url = "https://REPLACE-ME/torch-2.9.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      };
+      torchvision = {
+        version = "0.24.1";
+        url = "https://REPLACE-ME/torchvision-0.24.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      };
+      torchaudio = {
+        version = "2.9.1";
+        url = "https://REPLACE-ME/torchaudio-2.9.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      };
+      # pytorch-triton-rocm provides the `triton` module used by ComfyUI's AMD
+      # flash-attention path (FLASH_ATTENTION_TRITON_AMD_ENABLE=1).
+      triton = {
+        version = "3.5.0";
+        url = "https://REPLACE-ME/pytorch_triton_rocm-3.5.0-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      };
+    };
     # Linux x86_64 Intel XPU (oneAPI / SYCL)
     # In-tree PyTorch XPU — no IPEX needed. Targets Arc A/B series and
     # Core Ultra (Meteor Lake+) iGPUs. Older Xe-LP iGPUs (UHD 770) are

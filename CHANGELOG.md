@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Opt-in ROCm variant for the AMD Ryzen AI Max+ 395 / Strix Halo `gfx1151` iGPU
+  (Radeon 8060S), which segfaults on the stock gfx1100-targeted ROCm wheels (#34):
+  - New package/app `rocm-gfx1151`, overlay `comfy-ui-rocm-gfx1151`, and NixOS
+    module option `services.comfyui.rocmArch = "gfx1151"`.
+  - Phase 1 (default): reuses the stock `rocm7.1` wheels and bakes
+    `HSA_OVERRIDE_GFX_VERSION=11.0.0` (masquerade as gfx1100) plus
+    `GPU_MAX_HEAP_SIZE` / `GPU_MAX_ALLOC_PERCENT` into the launcher.
+  - Phase 2 (opt-in): fill in and `enable` the native gfx1151 wheel pins
+    (`pytorchWheels.rocmGfx1151` in `nix/versions.nix`) to switch to native
+    gfx1151 kernels (`HSA_OVERRIDE_GFX_VERSION=11.5.1`) with Triton
+    (`pytorch-triton-rocm`) flash-attention.
+  - Existing `rocm` variant (gfx1100 etc.) is unchanged.
+
 ## [0.25.0] - 2026-06-18
 
 ### Changed

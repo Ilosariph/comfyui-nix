@@ -4,11 +4,24 @@
   versions,
   pythonOverrides,
   gpuSupport ? "none", # "none", "cuda", "rocm", "xpu"
+  # ROCm architecture refinement: "default" or "gfx1151" (AMD Strix Halo /
+  # Ryzen AI Max+ 395). Only meaningful when gpuSupport = "rocm".
+  rocmArch ? "default",
 }:
 let
   useCuda = gpuSupport == "cuda" && pkgs.stdenv.isLinux;
   useRocm = gpuSupport == "rocm" && pkgs.stdenv.isLinux;
   useXpu = gpuSupport == "xpu" && pkgs.stdenv.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
+
+  # AMD Strix Halo / Ryzen AI Max+ 395 (gfx1151) launcher tuning.
+  # rocmGfx1151:       the opt-in gfx1151 variant (either phase).
+  # rocmGfx1151Native: Phase 2 — native gfx1151 wheels are enabled (versions.nix).
+  # When native, ROCm sees gfx1151 directly (override 11.5.1) and the bundled
+  # Triton flash-attention is enabled; otherwise the stock gfx1100 kernels are
+  # used via an 11.0.0 masquerade (Phase 1).
+  rocmGfx1151 = useRocm && rocmArch == "gfx1151";
+  rocmGfx1151Native = rocmGfx1151 && versions.pytorchWheels.rocmGfx1151.enable;
+  hsaOverrideDefault = if rocmGfx1151Native then "11.5.1" else "11.0.0";
 
   # Intel XPU runtime libraries (Level Zero loader, Intel compute-runtime, OpenCL ICD)
   # Bundled as a fallback when /run/opengl-driver/lib isn't available (non-NixOS Linux,
@@ -634,6 +647,30 @@ let
           export OverrideDefaultFP64Settings=1
           export IGC_EnableDPEmulation=1
         fi
+      ''}
+
+      ${lib.optionalString rocmGfx1151 ''
+        # =====================================================================
+        # AMD Strix Halo / Ryzen AI Max+ 395 (gfx1151) ROCm setup
+        # =====================================================================
+        # The Radeon 8060S iGPU (gfx1151) is not covered natively by the stock
+        # pytorch.org ROCm wheels (compiled for gfx1100), which SEGV on it at
+        # model-load time. Point ROCm at an architecture whose kernels are present:
+        #   Phase 1 (stock wheels):  11.0.0 → run the in-wheel gfx1100 kernels.
+        #   Phase 2 (native wheels): 11.5.1 → gfx1151 kernels are present natively.
+        # Only set values the user hasn't already exported, so overrides still win.
+        export HSA_OVERRIDE_GFX_VERSION="''${HSA_OVERRIDE_GFX_VERSION:-${hsaOverrideDefault}}"
+
+        # Let ComfyUI use the large unified-memory pool (the 395 shares up to
+        # ~96 GB with the iGPU). These are advisory caps; keep user overrides.
+        export GPU_MAX_HEAP_SIZE="''${GPU_MAX_HEAP_SIZE:-100}"
+        export GPU_MAX_ALLOC_PERCENT="''${GPU_MAX_ALLOC_PERCENT:-100}"
+      ''}
+
+      ${lib.optionalString rocmGfx1151Native ''
+        # Native gfx1151 wheels bundle a Triton build with AMD's flash-attention
+        # kernels. Enable it unless the user opted out.
+        export FLASH_ATTENTION_TRITON_AMD_ENABLE="''${FLASH_ATTENTION_TRITON_AMD_ENABLE:-1}"
       ''}
 
             # Open browser if requested (background, after short delay)

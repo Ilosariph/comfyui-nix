@@ -70,6 +70,10 @@
           # - Low memory usage (no 30-60GB RAM requirement)
           # - `gfx1100` tested (to date)
           # - ROCm 7.1 runtime bundled in wheels
+          # Opt-in `rocm-gfx1151` variant targets the AMD Ryzen AI Max+ 395 /
+          # Strix Halo iGPU (which SEGVs on the stock wheels): Phase 1 runs the
+          # stock wheels via an HSA_OVERRIDE_GFX_VERSION masquerade; Phase 2
+          # (opt-in pins in versions.nix) swaps in native gfx1151 wheels + Triton.
           # =======================================================================
 
           # Linux pkgs for cross-building Docker images from any system
@@ -94,11 +98,19 @@
           };
 
           pythonOverridesFor =
-            pkgs: gpuSupport: import ./nix/python-overrides.nix { inherit pkgs versions gpuSupport; };
+            pkgs: gpuSupport: rocmArch:
+            import ./nix/python-overrides.nix {
+              inherit
+                pkgs
+                versions
+                gpuSupport
+                rocmArch
+                ;
+            };
 
           mkPython =
             pkgs: gpuSupport:
-            pkgs.python312.override { packageOverrides = pythonOverridesFor pkgs gpuSupport; };
+            pkgs.python312.override { packageOverrides = pythonOverridesFor pkgs gpuSupport "default"; };
 
           mkPythonEnv =
             pkgs:
@@ -115,15 +127,17 @@
             pkgs:
             {
               gpuSupport ? "none",
+              rocmArch ? "default",
             }:
             import ./nix/packages.nix {
               inherit
                 pkgs
                 versions
                 gpuSupport
+                rocmArch
                 ;
               lib = pkgs.lib;
-              pythonOverrides = pythonOverridesFor pkgs gpuSupport;
+              pythonOverrides = pythonOverridesFor pkgs gpuSupport rocmArch;
             };
 
           # Linux packages for Docker image cross-builds
@@ -139,6 +153,13 @@
           # CUDA uses pre-built wheels (supports all GPU architectures)
           nativePackagesCuda = mkComfyPackages pkgs { gpuSupport = "cuda"; };
           nativePackagesRocm = mkComfyPackages pkgs { gpuSupport = "rocm"; };
+          # AMD Strix Halo / Ryzen AI Max+ 395 (gfx1151). Ships Phase 1 (stock
+          # wheels + HSA_OVERRIDE masquerade) by default; flip
+          # versions.pytorchWheels.rocmGfx1151.enable for Phase 2 native wheels.
+          nativePackagesRocmGfx1151 = mkComfyPackages pkgs {
+            gpuSupport = "rocm";
+            rocmArch = "gfx1151";
+          };
           nativePackagesXpu = mkComfyPackages pkgs { gpuSupport = "xpu"; };
 
           pythonEnv = mkPythonEnv pkgs;
@@ -204,6 +225,8 @@
             dockerImageCuda = nativePackagesCuda.dockerImageCuda;
             rocm = nativePackagesRocm.default;
             dockerImageRocm = nativePackagesRocm.dockerImageRocm;
+            # AMD Strix Halo / Ryzen AI Max+ 395 (gfx1151) — opt-in ROCm variant.
+            rocm-gfx1151 = nativePackagesRocmGfx1151.default;
             # Intel XPU (oneAPI / SYCL) — pre-built wheels, Linux x86_64 only.
             # Targets Arc A/B series and Core Ultra iGPUs (Meteor Lake+).
             xpu = nativePackagesXpu.default;
@@ -297,6 +320,12 @@
               self.packages.${final.stdenv.hostPlatform.system}.rocm
             else
               throw "comfy-ui-rocm is only available on x86_64 Linux";
+          # AMD Strix Halo / Ryzen AI Max+ 395 (gfx1151) ROCm variant (x86_64 Linux only)
+          comfy-ui-rocm-gfx1151 =
+            if final.stdenv.isLinux && final.stdenv.isx86_64 then
+              self.packages.${final.stdenv.hostPlatform.system}.rocm-gfx1151
+            else
+              throw "comfy-ui-rocm-gfx1151 is only available on x86_64 Linux";
           # Intel XPU variant (x86_64 Linux only) - pre-built wheels from pytorch.org/whl/xpu
           comfy-ui-xpu =
             if final.stdenv.isLinux && final.stdenv.isx86_64 then

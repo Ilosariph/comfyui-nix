@@ -11,9 +11,17 @@ let
       url,
       hash,
       propagatedBuildInputs ? [ ],
+      # Skip pythonRuntimeDepsCheck for wheels whose declared bounds are stale
+      # relative to nixpkgs (the deps themselves still go in propagatedBuildInputs).
+      dontCheckRuntimeDeps ? false,
     }:
     python.pkgs.buildPythonPackage {
-      inherit pname version propagatedBuildInputs;
+      inherit
+        pname
+        version
+        propagatedBuildInputs
+        dontCheckRuntimeDeps
+        ;
       format = "wheel";
       src = pkgs.fetchurl { inherit url hash; };
       doCheck = false;
@@ -157,6 +165,22 @@ rec {
     version = versions.vendored.manager.version;
     url = versions.vendored.manager.url;
     hash = versions.vendored.manager.hash;
+    # The 4.2.x wheel declares these in its metadata; without them
+    # pythonRuntimeDepsCheck fails the build. They are also added to the
+    # runtime env in packages.nix, but the wheel itself must satisfy its
+    # own dependency check.
+    propagatedBuildInputs = with python.pkgs; [
+      gitpython
+      pygithub
+      transformers
+      huggingface-hub
+      typer
+      rich
+      typing-extensions
+      toml
+      uv
+      chardet
+    ];
   };
 
   comfyKitchen = mkNativeWheel {
@@ -198,6 +222,9 @@ rec {
     version = versions.vendored.gradioClient.version;
     url = versions.vendored.gradioClient.url;
     hash = versions.vendored.gradioClient.hash;
+    # The wheel caps websockets at <16.0; nixpkgs now ships 16.1. The dep is
+    # declared below, so the runtime is complete -- only the upper bound fails.
+    dontCheckRuntimeDeps = true;
     propagatedBuildInputs = with python.pkgs; [
       fsspec
       httpx
@@ -213,6 +240,11 @@ rec {
     version = versions.vendored.gradio.version;
     url = versions.vendored.gradio.url;
     hash = versions.vendored.gradio.hash;
+    # Same stale-upper-bound situation as gradioClient: the 5.49.1 wheel caps
+    # aiofiles, pandas, pillow, pydantic, starlette and tomlkit below the
+    # versions nixpkgs now ships. All six are declared below, so the runtime is
+    # complete -- only the bounds fail.
+    dontCheckRuntimeDeps = true;
     propagatedBuildInputs = with python.pkgs; [
       aiofiles
       anyio

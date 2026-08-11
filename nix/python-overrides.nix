@@ -112,9 +112,54 @@ let
   );
 in
 final: prev:
+# scipy 1.18.0 fails one Hypothesis property test against numpy 2.5.1
+# (test_support_moments_sample: expects 0.0, gets 2.01e-09 -- a tolerance
+# issue, not a real defect; the other 87695 tests pass). It reproduces with
+# the same seed every run. Upstream nixpkgs ships a cached scipy so it never
+# builds there, but this overlay changes the package set, forcing a local
+# rebuild that runs the broken test.
+# Drop once nixpkgs carries a scipy with the tolerance loosened.
+lib.optionalAttrs (prev ? scipy) {
+  scipy = prev.scipy.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_support_moments_sample" ];
+  });
+}
+# inline-snapshot 0.34.2 fails three of its own test_docs cases, which compare
+# rendered documentation text and have drifted from the shipped docs. It is
+# only a transitive test dependency here (via rich-toolkit -> fastapi-cli), so
+# the doc tests have no bearing on what ComfyUI uses.
+// lib.optionalAttrs (prev ? inline-snapshot) {
+  inline-snapshot = prev.inline-snapshot.overridePythonAttrs (old: {
+    disabledTestPaths = (old.disabledTestPaths or [ ]) ++ [ "tests/test_docs.py" ];
+  });
+}
+# astropy 7.1.0 fails three IERS tests because the Earth-rotation tables it
+# bundles have aged out relative to the current date -- they are time-dependent,
+# not defects. astropy is only a transitive dependency here
+# (scikit-image -> insightface) and none of this affects image processing.
+// lib.optionalAttrs (prev ? astropy) {
+  astropy = prev.astropy.overridePythonAttrs (old: {
+    # Whole-file rather than per-test: "test_simple" is too generic a name to
+    # deselect safely, and every IERS test shares the same expiry cause.
+    disabledTestPaths = (old.disabledTestPaths or [ ]) ++ [
+      "lib/python3.12/site-packages/astropy/utils/iers/tests/test_iers.py"
+    ];
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_ut1_iers_A" ];
+  });
+}
+# django's test suite deadlocks in the sandbox: runtests.py forks worker
+# processes that sit idle forever instead of finishing, hanging the build
+# rather than failing it. django is only reachable here through a chain of
+# test dependencies (httplib2 -> pytest-randomly -> factory-boy -> django)
+# and is never imported by ComfyUI, so its own tests prove nothing for us.
+// lib.optionalAttrs (prev ? django) {
+  django = prev.django.overridePythonAttrs (_: {
+    doCheck = false;
+  });
+}
 # CUDA torch from pre-built wheels - avoids 30-60GB RAM compilation
 # The wheels bundle CUDA libraries internally, providing full GPU support
-lib.optionalAttrs useCuda {
+// lib.optionalAttrs useCuda {
   torch = final.buildPythonPackage {
     pname = "torch";
     version = cudaWheels.torch.version;
@@ -383,6 +428,13 @@ lib.optionalAttrs useCuda {
     ];
     buildInputs = wheelBuildInputs ++ rocmLibs;
 
+    # pythonRuntimeDepsCheck inspects the *wheel*, before postInstall can strip
+    # anything, so the triton-rocm strip below cannot satisfy it. triton-rocm is
+    # not packaged in nixpkgs and is only genuinely needed for the native
+    # gfx1151 wheels (handled via pytorch-triton-rocm below), so skip the
+    # pre-install check rather than declare a dependency that doesn't exist.
+    dontCheckRuntimeDeps = true;
+
     # These are provided by nixpkgs rocmPackages, not PyPI packages
     postInstall = ''
       for metadata in "$out/${final.python.sitePackages}"/torch-*.dist-info/METADATA; do
@@ -400,6 +452,8 @@ lib.optionalAttrs useCuda {
         networkx
         jinja2
         fsspec
+        # Declared by the wheel; torch imports it at runtime (torch.utils).
+        setuptools
       ])
       # Native gfx1151 wheels ship a Triton build (pytorch-triton-rocm) that
       # ComfyUI's AMD flash-attention path imports as `triton`.
@@ -942,7 +996,12 @@ lib.optionalAttrs useCuda {
 # Disable accelerate test that fails with torch 2.10.0 inductor in Nix sandbox
 // lib.optionalAttrs ((useCuda || useRocm || useXpu) && (prev ? accelerate)) {
   accelerate = prev.accelerate.overridePythonAttrs (old: {
-    disabledTests = (old.disabledTests or [ ]) ++ [ "test_convert_to_fp32" ];
+    disabledTests = (old.disabledTests or [ ]) ++ [
+      "test_convert_to_fp32"
+      # MultiCPUTester::test_ops spawns worker processes via
+      # torch.multiprocessing; process spawning does not work in the sandbox.
+      "test_ops"
+    ];
   });
 }
 
@@ -1038,7 +1097,12 @@ lib.optionalAttrs useCuda {
       torchvision
       filterpy
       numba
+      tqdm
     ];
+
+    # The wheel requires "opencv-python"; nixpkgs provides the same library as
+    # opencv4 (above), which the check cannot match by name.
+    dontCheckRuntimeDeps = true;
 
     # Patch misc.py to respect FACEXLIB_MODELPATH environment variable
     # This allows redirecting model downloads away from the read-only Nix store

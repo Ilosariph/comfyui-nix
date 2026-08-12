@@ -27,8 +27,9 @@ let
 
   # Pre-built PyTorch ROCm wheels from pytorch.org
   # These avoid compiling PyTorch from source (which requires 30-60GB RAM and hours of build time)
-  # When the native gfx1151 pins are enabled, use those instead (self-contained
-  # wheels with native Strix Halo kernels); otherwise the stock rocm71 wheels.
+  # When the native gfx1151 pins are enabled, use those instead (native Strix
+  # Halo kernels, split rocm_sdk layout — see rocmSdkRuntime); otherwise the
+  # stock rocm71 wheels.
   rocmWheels =
     if useRocmGfx1151Native then versions.pytorchWheels.rocmGfx1151 else versions.pytorchWheels.rocm71;
 
@@ -101,7 +102,9 @@ let
   );
 
   # ROCm libraries needed by PyTorch wheels (for auto-patchelf)
-  # The wheels bundle ROCm libraries internally; only compression libs are needed externally
+  # The stock rocm71 wheels bundle ROCm internally; only compression libs are
+  # needed externally. The native gfx1151 wheels do NOT (split rocm_sdk layout) —
+  # rocmSdkRuntime below supplies their ROCm .so files.
   rocmLibs = pkgs.lib.optionals useRocm (
     with pkgs;
     [
@@ -110,6 +113,91 @@ let
       bzip2 # libbz2.so.1
     ]
   );
+
+  # Combined ROCm runtime for the native gfx1151 wheels. torch/lib/ ships no ROCm
+  # libraries in the nightly split layout; the `rocm_sdk_core` (libamdhip64,
+  # libhsa-runtime64) and `rocm_sdk_libraries_gfx1151` (librocblas, libhipblaslt,
+  # libMIOpen, libhipsparselt) wheels carry them instead.
+  #
+  # Both are unpacked into one derivation rather than two buildPythonPackages:
+  # they cross-reference each other's SONAMEs, so a unified lib/ dir lets every
+  # reference resolve, and torch gets one buildInput. Same approach as
+  # intelOneapiRuntime for the XPU variant.
+  #
+  # The libs live under `_rocm_sdk_core/lib` and `_rocm_sdk_libraries_gfx1151/lib`
+  # (underscore-prefixed data packages), not the `.data/data/lib` convention.
+  rocmSdkRuntime = pkgs.stdenv.mkDerivation {
+    pname = "rocm-sdk-runtime-gfx1151";
+    version = versions.pytorchWheels.rocmGfx1151.rocmSdkCore.version;
+    srcs = [
+      (pkgs.fetchurl { inherit (versions.pytorchWheels.rocmGfx1151.rocmSdkCore) url hash; })
+      (pkgs.fetchurl { inherit (versions.pytorchWheels.rocmGfx1151.rocmSdkLibraries) url hash; })
+    ];
+    dontConfigure = true;
+    dontBuild = true;
+    sourceRoot = ".";
+    nativeBuildInputs = [
+      pkgs.unzip
+      pkgs.autoPatchelfHook
+    ];
+    buildInputs = wheelBuildInputs ++ [
+      pkgs.xz
+      pkgs.zstd
+      pkgs.bzip2
+      pkgs.elfutils # libelf.so.1 (comgr)
+      pkgs.numactl # libnuma.so.1 (hsa-runtime)
+      pkgs.libdrm # libdrm.so.2, libdrm_amdgpu.so.1
+      # The core wheel bundles a Mesa gallium video driver (unused for compute,
+      # but autoPatchelf still has to resolve it).
+      pkgs.expat # libexpat.so.1
+    ];
+    # These resolve within the unified lib/ dir at runtime, but autoPatchelf runs
+    # per-file before every wheel is staged, so cross-wheel SONAMEs look missing.
+    autoPatchelfIgnoreMissingDeps = [
+      "libamdhip64.so.7"
+      "libhsa-runtime64.so.1"
+      "libamd_comgr.so.3"
+      "librocprofiler-register.so.0"
+      "libhiprtc.so.7"
+      "librocblas.so.5"
+      "libhipblaslt.so.1"
+    ];
+    unpackPhase = ''
+      runHook preUnpack
+      for whl in $srcs; do
+        mkdir -p "wheel_$(basename "$whl" .whl)"
+        unzip -q "$whl" -d "wheel_$(basename "$whl" .whl)"
+      done
+      runHook postUnpack
+    '';
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out/lib $out/share/rocm-sdk
+      for wheel_dir in wheel_*; do
+        # Underscore-prefixed data packages hold the actual payload.
+        for libdir in "$wheel_dir"/_rocm_sdk_*/lib; do
+          if [ -d "$libdir" ]; then
+            cp -rn "$libdir"/. $out/lib/ 2>/dev/null || cp -r "$libdir"/. $out/lib/
+          fi
+        done
+        for meta in "$wheel_dir"/*.dist-info/METADATA; do
+          if [ -f "$meta" ]; then
+            pname=$(basename "$(dirname "$meta")" .dist-info)
+            mkdir -p "$out/share/rocm-sdk/$pname"
+            cp "$meta" "$out/share/rocm-sdk/$pname/"
+          fi
+        done
+      done
+      runHook postInstall
+    '';
+    dontStrip = true;
+    meta = {
+      description = "Combined ROCm runtime for native gfx1151 PyTorch wheels";
+      homepage = "https://rocm.nightlies.amd.com/";
+      license = lib.licenses.mit;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
 in
 final: prev:
 # scipy 1.18.0 fails one Hypothesis property test against numpy 2.5.1
@@ -426,7 +514,8 @@ lib.optionalAttrs (prev ? scipy) {
       pkgs.autoPatchelfHook
       pkgs.gnused
     ];
-    buildInputs = wheelBuildInputs ++ rocmLibs;
+    buildInputs =
+      wheelBuildInputs ++ rocmLibs ++ lib.optional useRocmGfx1151Native rocmSdkRuntime;
 
     # pythonRuntimeDepsCheck inspects the *wheel*, before postInstall can strip
     # anything, so the triton-rocm strip below cannot satisfy it. triton-rocm is
@@ -435,14 +524,72 @@ lib.optionalAttrs (prev ? scipy) {
     # pre-install check rather than declare a dependency that doesn't exist.
     dontCheckRuntimeDeps = true;
 
-    # These are provided by nixpkgs rocmPackages, not PyPI packages
-    postInstall = ''
-      for metadata in "$out/${final.python.sitePackages}"/torch-*.dist-info/METADATA; do
-        if [[ -f "$metadata" ]]; then
-          sed -i '/^Requires-Dist: triton-rocm/d' "$metadata"
-        fi
-      done
-    '';
+    # These are provided by nixpkgs rocmPackages, not PyPI packages.
+    # The native gfx1151 wheels declare a bare `triton==<exact nightly>` (a build
+    # that isn't published) plus `rocm[libraries]` for the split-layout runtime —
+    # both are satisfied out-of-band (pytorch-triton-rocm / rocmSdkRuntime), so
+    # strip them rather than let pip metadata demand unpublished distributions.
+    postInstall =
+      ''
+        for metadata in "$out/${final.python.sitePackages}"/torch-*.dist-info/METADATA; do
+          if [[ -f "$metadata" ]]; then
+            sed -i '/^Requires-Dist: triton-rocm/d' "$metadata"
+            sed -i '/^Requires-Dist: triton==/d' "$metadata"
+            sed -i '/^Requires-Dist: rocm\[/d' "$metadata"
+          fi
+        done
+      ''
+      # torch/__init__.py calls _rocm_init.initialize(), which does
+      # `import rocm_sdk; rocm_sdk.initialize_process(...)`. rocm_sdk is the
+      # Python meta-package of the split layout and AMD does not publish it at
+      # any 7.x version — the newest anywhere (every arch index, and PyPI) is a
+      # 6.5.0rc sdist from 2025-06, far older than the 7.13 nightly torch wants.
+      #
+      # Upstream's initialize_process ctypes-dlopens each library by shortname
+      # with RTLD_GLOBAL so later ROCm libs resolve against those symbols. Under
+      # Nix that name-resolution step is redundant — every .so already carries an
+      # RPATH into rocmSdkRuntime — but the RTLD_GLOBAL symbol sharing is not, so
+      # this replacement keeps the preload and only drops the path discovery.
+      # Missing libraries are skipped, matching upstream's behaviour.
+      + lib.optionalString useRocmGfx1151Native ''
+        cat > "$out/${final.python.sitePackages}/torch/_rocm_init.py" <<'EOF'
+        # Replaced at build time: see nix/python-overrides.nix (torch, gfx1151).
+        # Stand-in for the unpublished `rocm_sdk` package's initialize_process().
+        import ctypes
+        import os
+
+        _ROCM_LIB_DIR = "${rocmSdkRuntime}/lib"
+
+        _PRELOAD_SONAMES = [
+            "libamd_comgr.so.3",
+            "libamdhip64.so.7",
+            "libhiprtc.so.7",
+            "libhipblas.so.3",
+            "libhipblaslt.so.1",
+            "libhipfft.so.0",
+            "libhiprand.so.1",
+            "libhipsparse.so.4",
+            "libhipsparselt.so.0",
+            "libhipsolver.so.1",
+            "libMIOpen.so.1",
+            "librocblas.so.5",
+        ]
+
+        _loaded = {}
+
+        def initialize():
+            for soname in _PRELOAD_SONAMES:
+                if soname in _loaded:
+                    continue
+                path = os.path.join(_ROCM_LIB_DIR, soname)
+                if not os.path.exists(path):
+                    continue
+                try:
+                    _loaded[soname] = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+        EOF
+      '';
 
     propagatedBuildInputs =
       (with final; [
@@ -491,7 +638,13 @@ lib.optionalAttrs (prev ? scipy) {
     dontBuild = true;
     dontConfigure = true;
     nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-    buildInputs = wheelBuildInputs ++ rocmLibs ++ [ final.torch ];
+    buildInputs =
+      wheelBuildInputs
+      ++ rocmLibs
+      ++ [ final.torch ]
+      # Native gfx1151 torch bundles no ROCm libs, so its SONAMEs (librocm_smi64
+      # etc.) do not come along via final.torch — supply the runtime directly.
+      ++ lib.optional useRocmGfx1151Native rocmSdkRuntime;
 
     # Ignore torch libs (loaded via Python import)
     autoPatchelfIgnoreMissingDeps = [
@@ -509,6 +662,22 @@ lib.optionalAttrs (prev ? scipy) {
       "libMIOpen.so.1"
       "librocrand.so.1"
     ];
+
+    # Ignoring the torch SONAMEs above leaves them merely unresolved, which the
+    # stock wheels get away with: importing torch first dlopens its bundled libs
+    # into the global namespace, so torchvision's _C.so finds them already
+    # present. The native gfx1151 torch has no bundled ROCm and its libs are
+    # loaded through the _rocm_init replacement, which does not make libtorch
+    # itself global — leaving _C.so with every torch SONAME "not found", so the
+    # extension silently fails to load and `torchvision::nms` never registers.
+    # Put torch's lib dir on the RPATH instead of relying on import order.
+    postFixup = lib.optionalString useRocmGfx1151Native ''
+      for so in "$out/${final.python.sitePackages}"/torchvision/*.so; do
+        [ -f "$so" ] || continue
+        patchelf --add-rpath "${final.torch}/${final.python.sitePackages}/torch/lib" "$so"
+      done
+    '';
+
     propagatedBuildInputs = with final; [
       torch
       numpy
@@ -535,7 +704,13 @@ lib.optionalAttrs (prev ? scipy) {
     dontBuild = true;
     dontConfigure = true;
     nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-    buildInputs = wheelBuildInputs ++ rocmLibs ++ [ final.torch ];
+    buildInputs =
+      wheelBuildInputs
+      ++ rocmLibs
+      ++ [ final.torch ]
+      # Native gfx1151 torch bundles no ROCm libs, so its SONAMEs (librocm_smi64
+      # etc.) do not come along via final.torch — supply the runtime directly.
+      ++ lib.optional useRocmGfx1151Native rocmSdkRuntime;
     # Ignore torch libs (loaded via Python) and FFmpeg/sox libs (optional, multiple versions bundled)
     autoPatchelfIgnoreMissingDeps = [
       # Torch libs (loaded via Python import)
@@ -573,6 +748,15 @@ lib.optionalAttrs (prev ? scipy) {
       "libavfilter.so.9"
       "libavdevice.so.60"
     ];
+
+    # Same RPATH fix as torchvision — see the note there. Without it
+    # libtorchaudio.so cannot resolve the torch SONAMEs at import time.
+    postFixup = lib.optionalString useRocmGfx1151Native ''
+      for so in "$out/${final.python.sitePackages}"/torchaudio/lib/*.so*; do
+        [ -f "$so" ] || continue
+        patchelf --add-rpath "${final.torch}/${final.python.sitePackages}/torch/lib" "$so"
+      done
+    '';
     propagatedBuildInputs = with final; [
       torch
     ];
@@ -591,7 +775,11 @@ lib.optionalAttrs (prev ? scipy) {
 # import) — tune at build time if your pinned wheel resolves differently.
 // lib.optionalAttrs useRocmGfx1151Native {
   pytorch-triton-rocm = final.buildPythonPackage {
-    pname = "pytorch-triton-rocm";
+    # The gfx1151 index publishes this as `triton` (the `pytorch-triton-rocm`
+    # package there is stuck on a much older nightly). pname must match the
+    # wheel's own dist name or the wheel-format installer won't find it; the
+    # attribute keeps its historical name so downstream references still resolve.
+    pname = "triton";
     version = versions.pytorchWheels.rocmGfx1151.triton.version;
     format = "wheel";
     src = pkgs.fetchurl {
@@ -601,7 +789,7 @@ lib.optionalAttrs (prev ? scipy) {
     dontBuild = true;
     dontConfigure = true;
     nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-    buildInputs = wheelBuildInputs ++ rocmLibs;
+    buildInputs = wheelBuildInputs ++ rocmLibs ++ [ rocmSdkRuntime ];
     autoPatchelfIgnoreMissingDeps = [
       "libc10.so"
       "libc10_hip.so"

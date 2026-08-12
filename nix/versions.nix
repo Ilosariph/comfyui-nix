@@ -251,42 +251,102 @@
     #     launcher). Fully buildable — these placeholders are NOT referenced.
     #   Phase 2 (enable = true): swap in native gfx1151 wheels pinned below.
     #
-    # As of 2026-07 there is no official *non-nightly* gfx1151 cp312 wheel. Pin a
-    # SELF-CONTAINED build (ROCm bundled inside torch — NOT the split `rocm_sdk`
-    # nightly layout, which is reported broken re: hipsparselt), e.g. a known-good
-    # build from https://rocm.nightlies.amd.com/v2/gfx1151/ matching the ROCm 7.2 /
-    # torch 2.9.1 era used by AMD's rocm/pytorch image.
+    # There is no official non-nightly gfx1151 cp312 wheel, and no self-contained
+    # one either: every torch build in the gfx1151 nightly index uses the SPLIT
+    # `rocm_sdk` layout — torch/lib/ ships no ROCm libraries and the wheel declares
+    # `Requires-Dist: rocm[libraries]==<same-nightly>`. So the two rocm_sdk wheels
+    # below are pinned alongside torch and combined into one runtime derivation
+    # (see rocmSdkRuntime in python-overrides.nix), mirroring how the Intel XPU
+    # variant handles its unbundled oneAPI runtime.
     #
-    # To activate Phase 2:
-    #   1. set enable = true
-    #   2. replace each REPLACE-ME url with the real wheel url
-    #   3. fill each hash — get it with:
-    #        nix store prefetch-file --json <url> | jq -r .hash
-    #      (or run `nix build .#rocm-gfx1151` and copy the "got:" hash Nix prints)
-    # Version strings below are indicative; match your chosen wheels.
+    # Wheel URLs are `../`-relative in the index listing: files live at
+    # /v2/gfx1151/<file>, NOT /v2/gfx1151/<package>/<file>, and `+` must be
+    # %2B-encoded.
+    #
+    # Dates deliberately differ per wheel — each is the newest cp312 linux build
+    # available for that package. torch/torchaudio/triton/rocm_sdk are all
+    # 20260513; torchvision's newest is 20260411.
+    #
+    # torch 2.9.1 (not 2.10.0) is required: the 2.10.0 builds in this index carry
+    # no gfx1151 code objects (verified via `strings libtorch_hip.so`), only
+    # gfx1100/1152/1153. The 2.9.1 build does — 6 gfx1151 objects.
+    #
+    # NOTE: torch declares `triton==3.5.1+rocm7.13.0a20260513`, which does not
+    # exist in the index (3.6.0 is the 20260513 triton). Harmless — the torch
+    # derivation strips triton from Requires-Dist and sets dontCheckRuntimeDeps,
+    # then injects pytorch-triton-rocm explicitly.
+    # BLOCKED — keep enable = false until AMD publishes a ROCm-linked torchvision.
+    #
+    # Everything below is verified and the nix side is complete (rocmSdkRuntime,
+    # the _rocm_init replacement, the torchvision/torchaudio RPATH fixes): torch,
+    # torchvision and torchaudio all build, and native gfx1151 torch imports and
+    # reports 2.9.1+rocm7.13.0a20260513.
+    #
+    # What blocks it is upstream. torchvision-0.27.0a0+rocm7.13.0a20260411 — the
+    # only recent torchvision in the gfx1151 index — is linked against a CUDA
+    # torch despite its +rocm version tag: `nm -D --undefined-only` shows 16
+    # undefined CUDA symbols, and importing it dies with
+    #     undefined symbol: _ZN3c104cuda20CUDACachingAllocator9allocatorE
+    # so `torchvision::nms` never registers and any dependent (facexlib, ComfyUI
+    # itself) fails to build.
+    #
+    # There is no usable alternative in the index:
+    #   - 20260411 is the newest torchvision; the next ones back are
+    #     0.25.0a0+rocm7.9.0 (2025-10), built for a seven-month-older torch.
+    #   - That 0.25 build IS correctly ROCm-linked (30 HIP symbols), but 2 of its
+    #     111 undefined torch symbols are absent from torch 2.9.1+rocm7.13 —
+    #     c10::hip::c10_hip_check_implementation and a changed
+    #     torch::autograd::_wrap_outputs signature — so it will not load either.
+    #
+    # To retry: re-check the index for a torchvision at the same nightly date as
+    # torch, confirm with
+    #   nm -D --undefined-only torchvision/_C.so | grep -c CUDACachingAllocator
+    # (must be 0), update the pin, set enable = true, and `nix build .#rocm-gfx1151`.
+    #
+    # Until then the gfx1151 variant stays on Phase 1 (stock gfx1100 wheels +
+    # HSA_OVERRIDE masquerade), which is known NOT to fix the gfx1151 segfault —
+    # the crash is in hardware queue creation (rocr::AMD::GpuAgent::QueueCreate
+    # -> ReleaseQueueMainScratch) and reproduces with a bare
+    # `torch.cuda.Stream()`, no model involved.
     rocmGfx1151 = {
       enable = false;
       torch = {
-        version = "2.9.1";
-        url = "https://REPLACE-ME/torch-2.9.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        version = "2.9.1+rocm7.13.0a20260513";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/torch-2.9.1%2Brocm7.13.0a20260513-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-KT7OsGNR+RAyngK2ovKF6sKloSGOgTLCRCWULmotegA=";
       };
       torchvision = {
-        version = "0.24.1";
-        url = "https://REPLACE-ME/torchvision-0.24.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        version = "0.27.0a0+rocm7.13.0a20260411";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/torchvision-0.27.0a0%2Brocm7.13.0a20260411-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-/xkB2j0iPV3unwBpuTnJElEKQxB+H6HG1G1dgVhe25c=";
       };
       torchaudio = {
-        version = "2.9.1";
-        url = "https://REPLACE-ME/torchaudio-2.9.1%2Brocm7.2.gfx1151-cp312-cp312-linux_x86_64.whl";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        version = "2.9.0+rocm7.13.0a20260513";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/torchaudio-2.9.0%2Brocm7.13.0a20260513-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-3dHettgsMH8rGhB6vX7s7WDXbvdc0ZDTYbftfdIRI7s=";
       };
-      # pytorch-triton-rocm provides the `triton` module used by ComfyUI's AMD
-      # flash-attention path (FLASH_ATTENTION_TRITON_AMD_ENABLE=1).
+      # Provides the `triton` module used by ComfyUI's AMD flash-attention path
+      # (FLASH_ATTENTION_TRITON_AMD_ENABLE=1). The index package is `triton`
+      # (3.6.0), not `pytorch-triton-rocm` (whose newest gfx1151 build is a much
+      # older 20251216); both expose a top-level `triton/` module.
       triton = {
-        version = "3.5.0";
-        url = "https://REPLACE-ME/pytorch_triton_rocm-3.5.0-cp312-cp312-linux_x86_64.whl";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        version = "3.6.0+rocm7.13.0a20260513";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/triton-3.6.0%2Brocm7.13.0a20260513-cp312-cp312-linux_x86_64.whl";
+        hash = "sha256-Pn6o4qyzBGLgEte+mNPD+Ojsf00fXI/1E/dqKIfGtpA=";
+      };
+      # The ROCm runtime torch/lib/ no longer bundles. `core` has libamdhip64 /
+      # libhsa-runtime64; `libraries` has librocblas / libhipblaslt / libMIOpen /
+      # libhipsparselt (all four present — the hipsparselt gap that made the split
+      # layout risky is covered by this build).
+      rocmSdkCore = {
+        version = "7.13.0a20260513";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/rocm_sdk_core-7.13.0a20260513-py3-none-linux_x86_64.whl";
+        hash = "sha256-035eumipXGeLx7G7QS7C5QDS3fwOP0zVy5MnhTIOZuc=";
+      };
+      rocmSdkLibraries = {
+        version = "7.13.0a20260513";
+        url = "https://rocm.nightlies.amd.com/v2/gfx1151/rocm_sdk_libraries_gfx1151-7.13.0a20260513-py3-none-linux_x86_64.whl";
+        hash = "sha256-C7QTmXoPnjzQKUaJu5vnsnEubYyHuPMfYyfrivHKNEg=";
       };
     };
     # Linux x86_64 Intel XPU (oneAPI / SYCL)

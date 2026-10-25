@@ -147,6 +147,15 @@ lib.optionalAttrs (prev ? scipy) {
     disabledTests = (old.disabledTests or [ ]) ++ [ "test_ut1_iers_A" ];
   });
 }
+# backrefs 6.2's test_timeout busy-waits 0.5s in a replace callback and expects
+# the regex timeout to fire; under build load it never triggers
+# ("DID NOT RAISE TimeoutError"). Timing-dependent, not a defect. backrefs is
+# only a transitive dependency here (mkdocs-material -> jupyter tooling).
+// lib.optionalAttrs (prev ? backrefs) {
+  backrefs = prev.backrefs.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_timeout" ];
+  });
+}
 # django's test suite deadlocks in the sandbox: runtests.py forks worker
 # processes that sit idle forever instead of finishing, hanging the build
 # rather than failing it. django is only reachable here through a chain of

@@ -166,6 +166,14 @@ lib.optionalAttrs (prev ? scipy) {
     doCheck = false;
   });
 }
+# httplib2 0.32.0's checkPhase trips pytest-timeout (>17s) under build load
+# and aborts with INTERNALERROR even though every test passes. Timing-dependent,
+# not a defect. httplib2 is only a transitive dependency here.
+// lib.optionalAttrs (prev ? httplib2) {
+  httplib2 = prev.httplib2.overridePythonAttrs (_: {
+    doCheck = false;
+  });
+}
 # CUDA torch from pre-built wheels - avoids 30-60GB RAM compilation
 # The wheels bundle CUDA libraries internally, providing full GPU support
 // lib.optionalAttrs useCuda {

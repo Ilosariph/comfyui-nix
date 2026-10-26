@@ -8,16 +8,16 @@
 }:
 let
   lib = pkgs.lib;
-  useCuda = gpuSupport == "cuda" && pkgs.stdenv.isLinux;
-  useRocm = gpuSupport == "rocm" && pkgs.stdenv.isLinux;
+  useCuda = gpuSupport == "cuda" && pkgs.stdenv.hostPlatform.isLinux;
+  useRocm = gpuSupport == "rocm" && pkgs.stdenv.hostPlatform.isLinux;
   # Native gfx1151 wheels are opt-in (Phase 2): only used once the pins in
   # versions.nix are filled in and `enable = true`. While disabled, the gfx1151
   # variant reuses the stock rocm71 wheels (Phase 1: HSA_OVERRIDE masquerade).
   useRocmGfx1151Native =
     useRocm && rocmArch == "gfx1151" && versions.pytorchWheels.rocmGfx1151.enable;
   # Intel XPU wheels are Linux x86_64 only (no aarch64 upstream)
-  useXpu = gpuSupport == "xpu" && pkgs.stdenv.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
-  useDarwinArm64 = pkgs.stdenv.isDarwin && pkgs.stdenv.hostPlatform.isAarch64;
+  useXpu = gpuSupport == "xpu" && pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
+  useDarwinArm64 = pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64;
   sentencepieceNoGperf = pkgs.sentencepiece.override { withGPerfTools = false; };
 
   # Pre-built PyTorch CUDA wheels from pytorch.org
@@ -919,7 +919,7 @@ lib.optionalAttrs (prev ? scipy) {
 # Note: When useCuda=true, torch/torchvision/torchaudio are replaced with pre-built wheels
 # above. Packages that depend on torch (kornia, accelerate, etc.) will automatically
 # use our wheel-based torch via final.torch since we've overridden it in the overlay.
-// lib.optionalAttrs (pkgs.stdenv.isDarwin && prev ? sentencepiece) {
+// lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && prev ? sentencepiece) {
   sentencepiece = prev.sentencepiece.overridePythonAttrs (old: {
     buildInputs = [ sentencepieceNoGperf.dev ];
     nativeBuildInputs = old.nativeBuildInputs or [ ];
@@ -937,22 +937,22 @@ lib.optionalAttrs (prev ? scipy) {
     let
       # Use platform-specific wheels from PyPI (av 16.0.1, Python 3.12)
       wheelSrc =
-        if pkgs.stdenv.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
+        if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
           pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/b2/7a/1305243ab47f724fdd99ddef7309a594e669af7f0e655e11bdd2c325dfae/av-16.0.1-cp312-cp312-manylinux_2_28_x86_64.whl";
             hash = "sha256-2uzCByuCtqlCrL2qmi4AwFI0xh/vl2sicTmDwCCweZI=";
           }
-        else if pkgs.stdenv.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then
+        else if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then
           pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/cb/6e/f7abefba6e008e2f69bebb9a17ba38ce1df240c79b36a5b5fcacf8c8fcfd/av-16.0.1-cp312-cp312-manylinux_2_28_aarch64.whl";
             hash = "sha256-UgH3tLXtISgRjLkMKm1k/u2wWGynx4MXaJbHj/tLvVw=";
           }
-        else if pkgs.stdenv.isDarwin && pkgs.stdenv.hostPlatform.isx86_64 then
+        else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isx86_64 then
           pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/44/78/12a11d7a44fdd8b26a65e2efa1d8a5826733c8887a989a78306ec4785956/av-16.0.1-cp312-cp312-macosx_11_0_x86_64.whl";
             hash = "sha256-5BqP74XfsscXNJ+f90+S+VYBIqnxqUscbJqKnJRiunE=";
           }
-        else if pkgs.stdenv.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then
+        else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then
           pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/27/19/3a4d3882852a0ee136121979ce46f6d2867b974eb217a2c9a070939f55ad/av-16.0.1-cp312-cp312-macosx_14_0_arm64.whl";
             hash = "sha256-Y1KmSyXJ+YXU8nnCkC25qSQk5vLJchYeZxGWFvB5bLk=";
@@ -972,8 +972,8 @@ lib.optionalAttrs (prev ? scipy) {
         dontConfigure = true;
         propagatedBuildInputs = [ final.numpy ];
         # Linux manylinux wheels need autoPatchelfHook to fix library paths
-        nativeBuildInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
-        buildInputs = lib.optionals pkgs.stdenv.isLinux [
+        nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+        buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.stdenv.cc.cc.lib
           pkgs.zlib
         ];
@@ -1057,7 +1057,7 @@ lib.optionalAttrs (prev ? scipy) {
 # Disable filterpy tests on Darwin (test_hinfinity triggers BPT trap in pytest)
 // lib.optionalAttrs (prev ? filterpy) {
   filterpy = prev.filterpy.overridePythonAttrs (old: {
-    doCheck = if pkgs.stdenv.isDarwin then false else (old.doCheck or true);
+    doCheck = if pkgs.stdenv.hostPlatform.isDarwin then false else (old.doCheck or true);
   });
 }
 

@@ -137,7 +137,7 @@ in
 {
   package = packages.default;
 }
-// pkgs.lib.optionalAttrs (pkgs.stdenv.isDarwin || (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64)) {
+// pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin || (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64)) {
   comfy-extras-imports =
     pkgs.runCommand "comfy-extras-imports"
       {
